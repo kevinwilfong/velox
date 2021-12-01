@@ -56,6 +56,12 @@ class Registry {
       Creator creator,
       std::optional<std::string_view> helpMsg = std::nullopt) {
     std::lock_guard<std::mutex> lock(registerutex_);
+    if (Has(key)) {
+      VELOX_UNSUPPORTED(
+          "Function {} is ambiguous with the already registered function {}",
+          key,
+          creatorMap_.find(key)->first);
+    }
     creatorMap_[key] = std::move(creator);
     if (helpMsg) {
       helpMessage_[key] = *helpMsg;

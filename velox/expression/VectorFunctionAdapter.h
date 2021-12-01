@@ -192,6 +192,16 @@ class VectorAdapter : public VectorFunction {
     return hasStringArgs && allAscii;
   }
 
+  template<int32_t POSITION, typename std::enable_if_t<!isVariadicArgs<arg_at<POSITION>>(), int32_t> = 0>
+  inline VectorReader<arg_at<POSITION>> getOneReader(const DecodedArgs& packed, DecodedVector* oneUnpacked) const {
+    return VectorReader<arg_at<POSITION>>(oneUnpacked);
+  }
+
+  template<int32_t POSITION, typename std::enable_if_t<isVariadicArgs<arg_at<POSITION>>(), int32_t> = 0>
+  inline VectorReader<arg_at<POSITION>> getOneReader(const DecodedArgs& packed, DecodedVector* oneUnpacked) const {
+    return VectorReader<arg_at<POSITION>>(packed, POSITION);
+  }
+
   template <
       int32_t POSITION,
       typename... TReader,
@@ -202,7 +212,7 @@ class VectorAdapter : public VectorFunction {
               const DecodedArgs& packed,
               TReader&... readers) const {
     auto* oneUnpacked = packed.at(POSITION);
-    auto oneReader = VectorReader<arg_at<POSITION>>(oneUnpacked);
+    VectorReader<arg_at<POSITION>> oneReader = getOneReader<POSITION>(packed, oneUnpacked);
 
     // context->nullPruned() is true after rows with nulls have been
     // pruned out of 'rows', so we won't be seeing any more nulls here.

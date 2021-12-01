@@ -34,16 +34,62 @@ class ArgumentsCtx {
     return types_;
   }
 
-  bool operator==(const ArgumentsCtx& rhs) const {
-    if (types_.size() != rhs.types_.size()) {
+  bool typesEqualPrefix(const ArgumentsCtx& lhs, const ArgumentsCtx& rhs, size_t size) const {
+    if (lhs.types_.size() < size || rhs.types_.size() < size) {
       return false;
     }
+
+    auto endIter = std::end(lhs.types_);
+    endIter -= lhs.types_.size() - size;
+
     return std::equal(
-        std::begin(types_),
-        std::end(types_),
+        std::begin(lhs.types_),
+        endIter,
         std::begin(rhs.types()),
-        [](const std::shared_ptr<const Type>& l,
-           const std::shared_ptr<const Type>& r) { return l->kindEquals(r); });
+        [](const std::shared_ptr<const Type> &l,
+           const std::shared_ptr<const Type> &r) { return l->kindEquals(r); });
+  }
+
+  bool compareVariadicArgs(const VariadicArgsType& variadicArgs, const std::vector<std::shared_ptr<const Type>>& args, size_t startIndex) const {
+    auto& lastArgType = variadicArgs.childAt(0);
+    for (int i = startIndex; i < args.size(); ++i) {
+      if (!lastArgType->kindEquals(args[i])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool operator==(const ArgumentsCtx& rhs) const {
+    if (types_.size() > 0 && types_[types_.size() - 1]->isVariadicArgs()) {
+      size_t argPrefixSize = types_.size() - 1;
+
+      if (types_.size() == rhs.types_.size() &&
+          types_[types_.size() - 1]->kindEquals(rhs.types_[rhs.types_.size() - 1])) {
+        return typesEqualPrefix(*this, rhs, argPrefixSize);
+      }
+
+      if (!typesEqualPrefix(*this, rhs, argPrefixSize)) {
+        return false;
+      }
+
+      return compareVariadicArgs(types_[types_.size() - 1]->asVariadicArgs(), rhs.types_, argPrefixSize);
+    } else if (rhs.types_.size() > 0 && rhs.types_[rhs.types_.size() - 1]->isVariadicArgs()) {
+      size_t argPrefixSize = rhs.types_.size() - 1;
+
+      if (!typesEqualPrefix(*this, rhs, argPrefixSize)) {
+        return false;
+      }
+
+      return compareVariadicArgs(rhs.types_[rhs.types_.size() - 1]->asVariadicArgs(), types_, argPrefixSize);
+    } else {
+      if (types_.size() != rhs.types_.size()) {
+        return false;
+      }
+
+      return typesEqualPrefix(*this, rhs, types_.size());
+    }
   }
 
   bool operator!=(const ArgumentsCtx& rhs) const {
@@ -291,9 +337,15 @@ class UDFHolder final
       const core::QueryConfig&,
       const exec_arg_type<TArgs>*...>::value;
 
+  static constexpr bool udf_has_valid_variadic_args = ValidateVariadicArgs<TArgs...>::value;
+
   static_assert(
       udf_has_call || udf_has_callNullable,
       "UDF must implement at least one of `call` or `callNullable`");
+
+  static_assert(
+      ValidateVariadicArgs<TArgs...>::value,
+      "VariadicArgs can only be used as the last argument to a UDF");
 
   static constexpr bool is_default_null_behavior = !udf_has_callNullable;
   static constexpr bool has_ascii = udf_has_callAscii;
@@ -390,9 +442,9 @@ struct hash<facebook::velox::core::FunctionKey> {
   using result_type = std::size_t;
   result_type operator()(const argument_type& key) const noexcept {
     size_t val = std::hash<std::string>{}(key.name());
-    for (const auto& type : key.types()) {
-      val = val * 31 + type->hashKind();
-    }
+//    for (const auto& type : key.types()) {
+//      val = val * 31 + type->hashKind();
+//    }
     return val;
   }
 };

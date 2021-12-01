@@ -52,6 +52,10 @@ class DecodedArgs {
     return const_cast<exec::LocalDecodedVector*>(&holders_[i])->get();
   }
 
+  size_t size() const {
+    return holders_.size();
+  }
+
  private:
   std::vector<exec::LocalDecodedVector> holders_;
 };

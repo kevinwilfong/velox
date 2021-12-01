@@ -19,6 +19,7 @@
 #include <algorithm>
 #include "velox/core/CoreTypeSystem.h"
 #include "velox/expression/ComplexViewTypes.h"
+#include "velox/expression/Expr.h"
 #include "velox/functions/UDFOutputString.h"
 #include "velox/type/Type.h"
 #include "velox/vector/DecodedVector.h"
@@ -35,6 +36,9 @@ class ArrayView;
 
 template <typename K, typename V>
 class MapView;
+
+template <typename T>
+class VariadicArgsView;
 
 template <typename T, typename U>
 struct VectorReader;
@@ -82,6 +86,12 @@ template <typename T>
 struct resolver<std::shared_ptr<T>> {
   using in_type = std::shared_ptr<T>;
   using out_type = std::shared_ptr<T>;
+};
+
+template <typename T>
+struct resolver<VariadicArgs<T>> {
+  using in_type = VariadicArgsView<T>;
+  // VariadicArgs cannot be used as an out_type
 };
 } // namespace detail
 
@@ -618,6 +628,61 @@ struct VectorWriter<Row<T...>> {
   exec_out_t execOut_{};
   size_t offset_ = 0;
 };
+
+template <typename T>
+struct VectorReader<VariadicArgs<T>> {
+  using in_vector_t = typename TypeToFlatVector<T>::type;
+  using exec_in_t = typename VectorExec::resolver<VariadicArgs<T>>::in_type;
+
+  explicit VectorReader(const DecodedArgs& decodedArgs, int32_t startPosition)
+      : vectors_(prepareVectors(decodedArgs, startPosition)),
+        childrenDecoders_{decodedArgs.size() - startPosition},
+        childReaders_{prepareChildReaders(vectors_)} {}
+
+  exec_in_t operator[](size_t offset) const {
+    return VariadicArgsView<T>{&childReaders_, offset};
+  }
+
+  [[nodiscard]] bool isSet(size_t /*unused*/) const {
+    return true;
+  }
+
+  // TODO: Once other types are converted to view types, the doLoad protocol
+  // will be removed.
+  bool doLoad(size_t outerOffset, exec_in_t& results) const {
+    results = (*this)[outerOffset];
+    return true;
+  }
+
+ private:
+  std::vector<std::unique_ptr<VectorReader<T>>> prepareChildReaders(
+      const std::vector<const in_vector_t*>& vectors) {
+    std::vector<std::unique_ptr<VectorReader<T>>> childReaders;
+    childReaders.reserve(vectors.size());
+
+    for (int i = 0; i < vectors.size(); ++i) {
+      childReaders.emplace_back(std::make_unique<VectorReader<T>>(detail::decode(childrenDecoders_[i], *vectors[i])));
+    }
+
+    return childReaders;
+  }
+
+  std::vector<const in_vector_t*> prepareVectors(const DecodedArgs& decodedArgs, int32_t startPosition) {
+    std::vector<const in_vector_t*> vectors;
+    vectors.reserve(decodedArgs.size() - startPosition);
+
+    for (int i = startPosition; i < decodedArgs.size(); ++i) {
+      vectors.push_back(&detail::getDecoded<in_vector_t>(*decodedArgs.at(i)));
+    }
+
+    return vectors;
+  }
+
+  const std::vector<const in_vector_t*> vectors_;
+  std::vector<DecodedVector> childrenDecoders_;
+  std::vector<std::unique_ptr<VectorReader<T>>> childReaders_;
+};
+
 
 template <>
 class StringProxy<FlatVector<StringView>, false /*reuseInput*/>

@@ -75,7 +75,8 @@ enum class TypeKind : int8_t {
   UNKNOWN = 33,
   FUNCTION = 34,
   OPAQUE = 35,
-  INVALID = 36
+  INVALID = 36,
+  VARIADIC_ARGS = 37
 };
 
 TypeKind mapNameToTypeKind(const std::string& name);
@@ -92,6 +93,7 @@ class RowType;
 class FunctionType;
 class OpaqueType;
 class UnknownType;
+class VariadicArgsType;
 
 struct UnknownValue {
   bool operator==(const UnknownValue& /* b */) const {
@@ -367,6 +369,19 @@ struct TypeTraits<TypeKind::OPAQUE> {
   static constexpr const char* name = "OPAQUE";
 };
 
+template <>
+struct TypeTraits<TypeKind::VARIADIC_ARGS> {
+  using ImplType = VariadicArgsType;
+  using NativeType = void;
+  using DeepCopiedType = void;
+  static constexpr uint32_t minSubTypes = 1;
+  static constexpr uint32_t maxSubTypes = 1;
+  static constexpr TypeKind typeKind = TypeKind::VARIADIC_ARGS;
+  static constexpr bool isPrimitiveType = false;
+  static constexpr bool isFixedWidth = false;
+  static constexpr const char* name = "VARIADIC_ARGS";
+};
+
 template <TypeKind KIND>
 struct TypeFactory;
 
@@ -463,6 +478,7 @@ class Type : public Tree<const std::shared_ptr<const Type>>,
   VELOX_FLUENT_CAST(Map, MAP)
   VELOX_FLUENT_CAST(Row, ROW)
   VELOX_FLUENT_CAST(Opaque, OPAQUE)
+  VELOX_FLUENT_CAST(VariadicArgs, VARIADIC_ARGS)
 
   bool containsUnknown() const;
 
@@ -832,6 +848,54 @@ class OpaqueType : public TypeBase<TypeKind::OPAQUE> {
       DeserializeFunc<void> deserialize = nullptr);
 };
 
+  class VariadicArgsType : public TypeBase<TypeKind::VARIADIC_ARGS> {
+   public:
+    explicit VariadicArgsType(std::shared_ptr<const Type> child) : child_{child} {}
+
+    const std::shared_ptr<const Type>& elementType() const {
+      return child_;
+    }
+
+    uint32_t size() const override {
+      return 1;
+    }
+
+    const std::shared_ptr<const Type>& childAt(uint32_t idx) const override {
+      VELOX_USER_CHECK_EQ(idx, 0, "Variadic Args type should have only one child");
+      return elementType();
+    }
+
+    std::string toString() const override {
+      return "VARIADIC_ARGS<" + child_->toString() + ">";
+    }
+
+    bool operator==(const Type& other) const override {
+      if (&other == this) {
+        return true;
+      }
+      if (!other.isVariadicArgs()) {
+        return false;
+      }
+      auto& otherVariadicArgs = other.asVariadicArgs();
+      return *child_ == *otherVariadicArgs.child_;
+    }
+
+    folly::dynamic serialize() const override {
+      folly::dynamic obj = folly::dynamic::object;
+      obj["name"] = "Type";
+      obj["type"] = TypeTraits<TypeKind::VARIADIC_ARGS>::name;
+
+      folly::dynamic children = folly::dynamic::array;
+      children.push_back(child_->serialize());
+      obj["cTypes"] = children;
+
+      return obj;
+    }
+
+   protected:
+    std::shared_ptr<const Type> child_;
+  };
+
 using IntegerType = ScalarType<TypeKind::INTEGER>;
 using BooleanType = ScalarType<TypeKind::BOOLEAN>;
 using TinyintType = ScalarType<TypeKind::TINYINT>;
@@ -928,6 +992,8 @@ template <typename Class>
 std::shared_ptr<const OpaqueType> OPAQUE() {
   return OpaqueType::create<Class>();
 }
+
+std::shared_ptr<const VariadicArgsType> VARIADIC_ARGS(std::shared_ptr<const Type> elementType);
 
 #define VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(TEMPLATE_FUNC, typeKind, ...)      \
   [&]() {                                                                     \
@@ -1307,6 +1373,53 @@ struct Varchar {
  private:
   Varchar() {}
 };
+
+template <typename ARG_TYPE>
+struct VariadicArgs {
+  using arg_type = ARG_TYPE;
+
+ private:
+  VariadicArgs() {}
+};
+
+template <typename>
+struct isVariadicArgsType : public std::false_type {};
+
+template <typename T>
+struct isVariadicArgsType<VariadicArgs<T>> : public std::true_type {};
+
+template <typename T>
+constexpr bool isVariadicArgs() {
+  return isVariadicArgsType<T>::value;
+}
+
+template <typename... TArgs>
+struct ValidateVariadicArgs {
+  using arg_types = std::tuple<TArgs...>;
+  static constexpr int num_args = std::tuple_size<arg_types>::value;
+  template <int32_t POSITION>
+  using arg_at = typename std::tuple_element<POSITION, arg_types>::type;
+
+  template <
+      int32_t POSITION,
+      typename... Args,
+      typename std::enable_if_t<POSITION>=num_args - 1, int32_t> = 0>
+  static constexpr bool isValidArg() {
+    return true;
+  }
+
+  template <
+      int32_t POSITION,
+      typename... Args,
+      typename std::enable_if_t<POSITION<num_args - 1, int32_t> = 0>
+  static constexpr bool isValidArg() {
+    return !isVariadicArgs<arg_at<POSITION>>() && isValidArg<POSITION + 1, Args...>();
+  }
+
+ public:
+  static constexpr bool value = isValidArg<0, TArgs...>();
+};
+
 template <>
 struct CppToType<int64_t> : public CppToTypeBase<TypeKind::BIGINT> {};
 
@@ -1406,6 +1519,13 @@ template <>
 struct CppToType<DynamicRow> : public TypeTraits<TypeKind::ROW> {
   static std::shared_ptr<const Type> create() {
     throw std::logic_error{"can't determine exact type for DynamicRow"};
+  }
+};
+
+template <typename T>
+struct CppToType<VariadicArgs<T>> : public TypeTraits<TypeKind::UNKNOWN> {
+  static auto create() {
+    return VARIADIC_ARGS(CppToType<T>::create());
   }
 };
 

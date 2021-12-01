@@ -727,4 +727,69 @@ TEST_F(SimpleFunctionTest, arrayStringReuse) {
   assertEqualVectors(expected, result);
 }
 
+// Function that takes an array as input.
+template <typename T>
+struct VariadicArgsReaderFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  FOLLY_ALWAYS_INLINE bool call(
+      out_type<Varchar>& out,
+      const arg_type<VariadicArgs<Varchar>>& inputs) {
+    auto totalSize = 0;
+    for (auto &input: inputs) {
+      totalSize += input.value().size();
+    }
+    out.resize(totalSize);
+    auto* data = out.data();
+
+    for (auto &input: inputs) {
+      std::memcpy(data, input.value().data(), input.value().size());
+      data += input.value().size();
+    }
+
+    return true;
+  }
+};
+
+template <typename T>
+struct VariadicArgsReader2Function {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  FOLLY_ALWAYS_INLINE bool call(
+      out_type<Varchar>& out,
+      const arg_type<Varchar>& input) {
+    auto totalSize = 0;
+    totalSize += input.size();
+
+    out.resize(totalSize);
+    auto* data = out.data();
+
+    std::memcpy(data, input.data(), input.size());
+    data += input.size();
+
+    return true;
+  }
+};
+
+TEST_F(SimpleFunctionTest, variadicArgsReader) {
+  registerFunction<VariadicArgsReaderFunction, Varchar, VariadicArgs<Varchar>>(
+      {"variadic_args_reader_func"});
+  registerFunction<VariadicArgsReader2Function, Varchar, Varchar>(
+      {"variadic_args_reader_func"});
+
+  auto arg1 = makeFlatVector<std::string>({"a", "b", "c"});
+  auto arg2 = makeFlatVector<std::string>({"d", "e", "f"});
+  auto arg3 = makeFlatVector<std::string>({"x", "y", "z"});
+  auto result = evaluate<FlatVector<StringView>>(
+      "variadic_args_reader_func(c0, c1, c2)", makeRowVector({arg1, arg2, arg3}));
+
+  ASSERT_EQ(result->valueAt(0).getString(), "adx");
+  ASSERT_EQ(result->valueAt(1).getString(), "bey");
+  ASSERT_EQ(result->valueAt(2).getString(), "cfz");
+}
+
+TEST_F(SimpleFunctionTest, variadic) {
+  ASSERT(isVariadicArgs<VariadicArgs<Varchar>>());
+}
+
 } // namespace

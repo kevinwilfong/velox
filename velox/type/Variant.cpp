@@ -295,6 +295,7 @@ std::string variant::toJson() const {
     case TypeKind::FUNCTION:
     case TypeKind::UNKNOWN:
     case TypeKind::INVALID:
+    case TypeKind::VARIADIC_ARGS:
       VELOX_NYI();
   }
 

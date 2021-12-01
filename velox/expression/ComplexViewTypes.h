@@ -564,4 +564,195 @@ class MapView {
   vector_size_t offset_;
   vector_size_t size_;
 };
+
+// Represents an array of elements with an interface similar to std::vector.
+  template <typename T>
+  class VariadicArgsView {
+    using reader_t = VectorReader<T, void>;
+    using element_t = typename reader_t::exec_in_t;
+
+   public:
+    VariadicArgsView(const std::vector<std::unique_ptr<reader_t>>* readers, size_t offset)
+        : readers_(readers), offset_(offset) {}
+
+    // The previous doLoad protocol creates a value and then assigns to it.
+    // TODO: this should deprecated once we deprecate the doLoad protocol.
+    VariadicArgsView() : readers_(nullptr), offset_(0) {}
+
+    class VectorOptionalValueAccessor final {
+     public:
+      operator bool() const {
+        return has_value();
+      }
+
+      // Enable to be assigned to std::optional<element_t>.
+      operator std::optional<element_t>() const {
+        if (!has_value()) {
+          return std::nullopt;
+        }
+        return {value()};
+      }
+
+      // Disable all other implicit casts to avoid odd behaviors.
+      template <typename B>
+      operator B() const = delete;
+
+      bool operator==(const VectorOptionalValueAccessor& other) const {
+        if (other.has_value() != has_value()) {
+          return false;
+        }
+
+        if (has_value()) {
+          return value() == other.value();
+        }
+        // Both are nulls.
+        return true;
+      }
+
+      bool operator!=(const VectorOptionalValueAccessor& other) const {
+        return !(*this == other);
+      }
+
+      bool has_value() const {
+        return readers_[readerIndex_]->isSet(index_);
+      }
+
+      element_t value() const {
+        return (*(*readers_)[readerIndex_])[index_];
+      }
+
+      element_t value_or(const element_t& defaultValue) const {
+        return has_value() ? value() : defaultValue;
+      }
+
+      element_t operator*() const {
+        return value();
+      }
+
+      void incrementIndex() const {
+        readerIndex_++;
+      }
+
+      vector_size_t index() const {
+        return readerIndex_;
+      }
+
+      void setIndex(vector_size_t index) const {
+        readerIndex_ = index;
+      }
+
+     private:
+      VectorOptionalValueAccessor(const std::vector<std::unique_ptr<reader_t>>* readers, size_t readerIndex, size_t index)
+          : readers_(readers), readerIndex_(readerIndex), index_(index) {}
+
+      const std::vector<std::unique_ptr<reader_t>>* readers_;
+      mutable size_t readerIndex_;
+      // Index of element within the reader.
+      const size_t index_;
+
+      friend class VariadicArgsView<T>;
+    };
+
+    class Iterator : public std::iterator<std::input_iterator_tag, VectorOptionalValueAccessor, size_t> {
+     public:
+      explicit Iterator(const VectorOptionalValueAccessor& element) : element_(element) {}
+
+      bool operator!=(const Iterator& rhs) const {
+        return element_.index() != rhs.element_.index();
+      }
+
+      bool operator==(const Iterator& rhs) const {
+        return element_.index() == rhs.element_.index();
+      }
+
+      const VectorOptionalValueAccessor& operator*() const {
+        return element_;
+      }
+
+      const VectorOptionalValueAccessor* operator->() const {
+        return &element_;
+      }
+
+      bool operator<(const Iterator& rhs) const {
+        return element_.index() < rhs.element_.index();
+      }
+
+      // Implement post increment.
+      Iterator operator++(int) {
+        Iterator old = *this;
+        ++*this;
+        return old;
+      }
+
+      // Implement pre increment.
+      Iterator& operator++() {
+        element_.incrementIndex();
+        return *this;
+      }
+
+     protected:
+      VectorOptionalValueAccessor element_;
+      friend class VariadicArgsView<T>;
+    };
+
+    Iterator begin() const {
+      return Iterator{VectorOptionalValueAccessor{readers_, 0, offset_}};
+    }
+
+    Iterator end() const {
+      return Iterator{VectorOptionalValueAccessor{readers_, readers_->size(), offset_}};
+    }
+
+    struct SkipNullsContainer {
+      using Iterator = SkipNullsIterator<VectorOptionalValueAccessor>;
+
+      explicit SkipNullsContainer(const VariadicArgsView<T>* args_) : args_(args_) {}
+
+      Iterator begin() {
+        auto endIndex = args_->offset_ + args_->size_;
+        return Iterator::initialize(
+            VariadicArgsView<T>{args_->readers_, args_->offset_}, endIndex);
+      }
+
+      Iterator end() {
+        auto endIndex = args_->offset_ + args_->size_;
+        return Iterator{VariadicArgsView<T>{args_->readers_, endIndex}, endIndex};
+      }
+
+     private:
+      const VariadicArgsView<T>* args_;
+    };
+
+    // Returns true if any of the arrayViews in the vector might have null
+    // element.
+    bool mayHaveNulls() const {
+      for (const auto* reader : readers_) {
+        if (reader->mayHaveNulls()) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    VectorOptionalValueAccessor operator[](vector_size_t index) const {
+      return VectorOptionalValueAccessor{readers_, index, offset_};
+    }
+
+    VectorOptionalValueAccessor at(vector_size_t index) const {
+      return (*this)[index];
+    }
+
+    size_t size() const {
+      return readers_->size();
+    }
+
+    SkipNullsContainer skipNulls() {
+      return SkipNullsContainer{this};
+    }
+
+   private:
+    const std::vector<std::unique_ptr<reader_t>>* readers_;
+    size_t offset_;
+  };
 } // namespace facebook::velox::exec

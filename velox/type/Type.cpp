@@ -539,6 +539,11 @@ std::shared_ptr<const FunctionType> FUNCTION(
       std::move(argumentTypes), std::move(returnType));
 };
 
+std::shared_ptr<const VariadicArgsType> VARIADIC_ARGS(
+    std::shared_ptr<const Type> elementType) {
+  return std::make_shared<const VariadicArgsType>(std::move(elementType));
+};
+
 #define KOSKI_DEFINE_SCALAR_ACCESSOR(KIND)                   \
   std::shared_ptr<const ScalarType<TypeKind::KIND>> KIND() { \
     return ScalarType<TypeKind::KIND>::create();             \
